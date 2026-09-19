@@ -73,8 +73,36 @@ groups $USER | grep -q dialout || sudo usermod -a -G dialout $USER
 # then log out/in for the group to take effect
 ```
 
+The udev rule from Step 3d carries `MODE="0666", GROUP="dialout"`, which fixes this
+permanently — if permissions still reset on replug, the rule isn't matching that device
+(see the next entry).
+
 **Ports change every time you replug/reboot:** expected on Linux with generic USB-serial
-adapters — see `reference/persistent-usb-ports.md` for a udev-rule fix.
+adapters, and exactly what Step 3's serial-number binding prevents. If it's still
+happening, the udev rule isn't taking effect.
+
+**A `/dev/lerobot_*` symlink is missing after `udevadm trigger`:**
+
+```sh
+ls -l /dev/lerobot_*                                  # what actually got created
+cat /etc/udev/rules.d/99-lerobot.rules                # what the rule says
+for dev in /dev/ttyACM*; do udevadm info -q property -n "$dev" | sed -n 's/^ID_SERIAL_SHORT=/serial: /p'; done
+udevadm test /sys/class/tty/ttyACM0 2>&1 | grep -i lerobot   # does the rule match at all?
+```
+
+- Serial mismatch is the usual cause — matching is case-sensitive, so copy the value
+  from the command output rather than retyping it.
+- `ATTRS{idVendor}` in the rule must match the board's real vendor id (`1a86` for the
+  WaveShare CH343 boards, but `0403`/`10c4` for other adapters). Drop that clause to
+  test.
+- The arm must be plugged in when you run `udevadm trigger`; otherwise replug it.
+- Two boards reporting the **same** serial can't be told apart by serial at all — see
+  the duplicate-serial fallback in `reference/persistent-usb-ports.md`.
+
+**The wrong arm responds / left and right are swapped (bimanual):** the symlink names
+are crossed. Swap the two `SYMLINK+=` values in `/etc/udev/rules.d/99-lerobot.rules`,
+re-run `sudo udevadm control --reload-rules && sudo udevadm trigger`, and re-test. No
+recalibration or recabling needed — calibration is keyed by arm `id`, not by port.
 
 ## Motor setup (`lerobot-setup-motors`)
 
@@ -106,3 +134,16 @@ adapters — see `reference/persistent-usb-ports.md` for a udev-rule fix.
 - **Calibration file appears empty / wrong id:** confirm `--robot.id` (or
   `--teleop.id`) was actually passed — omitting it still runs calibration but names the
   file unhelpfully. Just re-run with an explicit id; it overwrites cleanly.
+- **Bimanual: calibration files named `follower_left_left.json`:** the `bi_so_follower`
+  / `bi_so_leader` types append `_left` and `_right` to `--robot.id`/`--teleop.id`
+  themselves, so pass the **base** name (`follower`, `leader`) — not an already-suffixed
+  one. Delete the doubled-up files and re-run with the base id.
+- **Bimanual: only one arm gets calibrated, or the second arm errors immediately:** the
+  bimanual command drives both arms in sequence from a single invocation, so both ports
+  must be live for the whole run. Check that both `--robot.left_arm_config.port` and
+  `--robot.right_arm_config.port` symlinks resolve (`ls -l /dev/lerobot_*`) before
+  starting.
+- **Bimanual: want to recalibrate just one arm:** run it as a plain single arm against
+  that arm's port with the explicit suffixed id, e.g. `--robot.type=so101_follower
+  --robot.port=/dev/lerobot_follower_left --robot.id=follower_left` — it writes the same
+  file the bimanual run would have.
